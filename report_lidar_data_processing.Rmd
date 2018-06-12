@@ -1,0 +1,211 @@
+---
+title: "EucFACE Lidar data processing"
+author: "Kashif Mahmud"
+date: "17 May 2018"
+output:
+  html_document: default
+  word_document: default
+editor_options: 
+  chunk_output_type: inline
+---
+
+<!-- #---------------------------------------------------------------------------------------------------------------- -->
+<!-- #---------------------------------------------------------------------------------------------------------------- -->
+
+<!-- Load required libraries. This script will check for required libraries and install any that are missing.   -->
+```{r load_packages, echo=FALSE, results='hide', message=FALSE}
+source('R/load_packages_lidar.R')
+```
+<!-- Load the custom analysis and plotting functions that do all of the actual work.   -->
+```{r load_functions, echo=FALSE, results='hide', message=FALSE}
+source("R/functions_lidar.R")	
+```
+
+<!-- #---------------------------------------------------------------------------------------------------------------- -->
+<!-- #---------------------------------------------------------------------------------------------------------------- -->
+### Processing Lidar data to estimate EucFACE biomass and compare with BAAD and allometric datasets
+#### Briefly describe the technique to estimate the tree biomass from Lidar data      
+Tree attributes and stem volume were directly inferred from the Terrestrial laser scanning (TLS) data through quantitative structure models (QSMs) presented in Raumonen et al. (2013) and Calders et al. (2015). TLS data were acquired with a RIEGL VZ-400 terrestrial laser scanner (RIEGL Laser Measurement Systems GmbH). Tree height, DBH and stem volume were derived from the TLS data following a two-step approach: (i) manually extracting single trees from the registered TLS point cloud (one sample example in *Figure 1*); and (ii) deriving parameters for an extracted single tree.  
+
+Once a tree is extracted from the point cloud, the next step is to strip off the leaves, and segment the point cloud into stem and branches. Finally, the surface and volume of the segments are reconstructed with geometric primitives (cylinders). The method uses a cover set approach, where the point cloud is partitioned into small subsets, which correspond to small connected patches in the tree surface.  
+
+##### *Summary of the process*
+The QSM method segments the cover sets (point cloud) into trunk and individual branches. This process starts from the base of the trunk and in step-by-step proceeds along the trunk (later along branches) by fitting cylinders and each step finds out if there is bifurcation. If there is branch, its base is saved as new basis for later segmentation. This way the trunk is segmented and its branches are separated from it. Then the same process continues from the base of the first branch found. This way the QSM method first determines the trunk, then the 1st-order branches, then 2nd-order branches, etc.  
+
+##### *Description of the QSM function, inputs and outputs*
+Generate QSM of the point clouds using the basic Matlab command:  
+qsm_tree(P,PatchDiam1,BallRad1,nmin1,PatchDiam2Min,PatchDiam2Max,BallRad2,nmin2,lcyl,OnlyTree,Tria,string,FilRad)   
+Example: ModelData = qsm_tree ( pts, 0.08, 0.09, 3, 0.08, 0.2, 0.09, 1, 5, 1, 1, 'tree', 3 )   
+
+##### *Inputs are:*
+    P = (Filtered) point cloud, (m_points x 3)-matrix, the rows give the coordinates of the points  
+    PatchDiam1 = Cover set size of the first uniform-size cover  
+    BallRad1 = Ball size used for the first cover generation  
+    nmin0 = Minimum number of points in BallRad1-balls  
+    PatchDiam2Min = Minimum patch size of the cover sets in the second cover  
+    PatchDiam2Max = Maximum cover set size in the base of the stem in the second cover  
+    BallRad2 = Maximum ball size used for the second cover generation  
+    nmin = Minimum number of points in BallRad2-balls   
+    lcyl = Cylinder length/radius ratio. Can have multiple values, in which case makes as many models with the same segmentations   
+    OnlyTree = Logical value, true if only points from the tree to be modelled, in which case defines the base of the trunk as the lowest part of the point cloud  
+    Tria = Logical value, if true, then make triangulation for the stem up to first branch  
+    string = Name string for saving output files  
+    FilRad = Optional input, relative radius for outlier point filtering. Can have multiple values in which case makes as many models with the same segmentations   
+
+##### *Outputs are:*   
+###### *Each of the individual tree has three output data files:*  
+  1) Tree data: The tree data file contains the attributes (volumes (L), lengths (m), surface areas (m^2^), dbh (cm) etc.). This file has 41 output data provided in 41 rows with the same sequence listed in *Step 2* (only the first 17 outputs are shown). Dbh is estimated with three different methods: dbh (QSM) is the diameter from the cylinder of the QSM at the right height - using least squares circle fitting, dbh (cylinder) is the diameter of the cylinder fitted to the height 1.1-1.5m - using least squares cylinder fitting, and dbh (triangulation) uses the triangulation technique (Hough transformation). Tansey et al. (2009) compared all these 3 methods for estimating DBH and found that least squares circle fitting was most accurate. Therefore, the first one would be more representative.   
+  2) Branch data: Branch data file contains info of each branch   
+  3) Cylinder data: Cylinder data file contains info of each cylinder   
+
+##### *How to optimise the parameters in QSM:*  
+The best way to select the input parameters at the beginning is to just try different parameter values to see how the results look and change. For BallRad1 and BallRad2 one should always use little larger value than for PatchDiam1 and PatchDiam2Max, respectively, for example BallRad2 = PatchDiam2Max+0.01. If point density is low, then bigger differences could be used. Notice that for the first cover with large cover sets, the actual values used for PatchDiam1 and BallRad1 are not so important, but they should be quite large compared to PatchDiam2Min used in the second cover so that the first segmentation is done quickly.  
+
+For the second cover with smaller sets, the values are more important because they affect the resulting QSM much more, and therefore needs to be optimised. For the second cover the user can specify the minimum and the maximum patch sizes with parameters PatchDiamMin and PatchDiamMax. The maximum size is at the base of the stem and the minimum at the tips of the branches and the stem. The size of the sets should be small enough for the local details of the branches: The cover sets near the tips of the branches need to be small so that all the details can be seen. At the same time these small sets near the base of the trunk are too small for efficiency and may even lead wrong segmentation.   
+
+<!-- #---------------------------------------------------------------------------------------------------------------- -->
+<!-- #---------------------------------------------------------------------------------------------------------------- -->
+#### Step 1:   
+##### Manually extracting single trees from the registered TLS point cloud   
+
+```{r plot.model.lidar, eval=TRUE, echo=FALSE, results="asis", message=FALSE, warning = FALSE, fig.path = "Figures/", fig.width = 6, fig.height = 3}
+plot.model.lidar()
+```
+
+**Figure 1**: Manually extracted Tree 1 from the registered TLS point cloud   
+
+<!-- #---------------------------------------------------------------------------------------------------------------- -->
+<!-- #---------------------------------------------------------------------------------------------------------------- -->
+<!-- #---------------------------------------------------------------------------------------------------------------- -->
+<!-- #---------------------------------------------------------------------------------------------------------------- -->
+   
+#### Step 2: Deriving parameters for an extracted single tree to run the QSM  
+
+Below are the optimised parameters I have used to run the QSM with all the cropped trees (*from step 1*) from EucFACE:  
+**ModelData_1 = qsm_tree ( pts, 0.08, 0.09, 3, 0.08, 0.2, 0.09, 1, 5, 1, 1, 'tree_1', 3 )**   
+
+###### One sample output (Tree 1, Ring 1) is given here:
+    Tree 1: Coordinates of trunk base = (-9.0824, -9.0882, -1.6107)   
+    Tree attributes:  
+    Total volume = 99 L   
+    Trunk volume = 61.2 L  
+    Trunk surface area = 2.91 m^2  
+    Branch volume = 37.7 L  
+    Total height = 9.92 m  
+    Trunk length = 15.5 m  
+    Branch length = 74.3 m  
+    Number of branches = 89  
+    Maximum branch order = 4  
+    Total cylinder area = 8.01 m^2  
+    Dbh (QSM) = 14.4 cm  
+    Dbh (cylinder) = 14.1 cm  
+    Dbh (triangulation) = 14.4 cm  
+    Triangulated trunk volume = 61.2 L  
+    Triangulated trunk length = 2.84 m  
+    Mixed trunk volume = 61.2 L  
+    Mixed total volume = 99 L  
+
+<!-- #---------------------------------------------------------------------------------------------------------------- -->
+<!-- #---------------------------------------------------------------------------------------------------------------- -->
+
+#### Step 3: Compare Biomass data from both Lidar and BAAD  
+
+###### Read both the Lidar and BAAD data
+```{r read_lidar_baad_data, eval=TRUE, echo=FALSE, results="asis", message=FALSE, warning = FALSE, fig.path = "Figures/", fig.width = 9, fig.height = 6}
+source('R/read_lidar_baad_data.R')	
+```
+
+###### Plot figures
+```{r mass_vs_dbh_with_growingcondition, eval=TRUE, echo=FALSE, results="asis", message=FALSE, warning = FALSE, fig.path = "Figures/", fig.width = 9, fig.height = 6}
+source('R/mass_vs_dbh_with_growingcondition.R')	
+```
+
+**Figure 2**: Compare Biomass data from both Lidar and BAAD having different growing conditions     
+
+```{r mass_vs_dbh_with_age, eval=TRUE, echo=FALSE, results="asis", message=FALSE, warning = FALSE, fig.path = "Figures/", fig.width = 9, fig.height = 6}
+source('R/mass_vs_dbh_with_age.R')	
+```
+
+**Figure 3**: Compare Biomass data from both Lidar and BAAD with plant age   
+
+<!-- #---------------------------------------------------------------------------------------------------------------- -->
+<!-- #---------------------------------------------------------------------------------------------------------------- -->
+
+#### Step 4: Compare Wood Biomass estimates from both Lidar and allometric equation (using Dendrometer DBH)   
+
+The objective here is to compare wood biomass estimates from:   
+  a) Dendrometer DBH readings scaled up with an allometric equation (giving total aboveground biomass),   
+  b) Lidar-based total wood volume (excluding leaves) multiplied with a literature value for wood density, from Zanne et al, of 0.82 g cm-3.    
+```{r wood_pool_allometric, eval=TRUE, echo=FALSE, results="asis", message=FALSE, warning = FALSE}
+source('R/wood_pool_allometric.R')	
+```
+
+```{r echo = FALSE, results = 'asis'}
+kable(wood.pool, caption = "Table 1: Compare woodmass (kg) estimates from both Lidar and allometric equation")
+```
+  
+#### Summary:
+**The Lidar-based AGB, Stem and Branch biomass for all EucFACE trees agree with the Eucalyptus species of BAAD database (Figure 2 and 3).**   
+**The total Lidar-based wood mass for EucFACE plots match reasonably well with the wood mass from allometric estimates (Table 1).**   
+
+<!-- #---------------------------------------------------------------------------------------------------------------- -->
+<!-- #---------------------------------------------------------------------------------------------------------------- -->
+
+#### Step 5: Identify same trees in both census and lidar data    
+Plot #1:  
+The key parameters are: PatchDiam2Min = 0.15; PatchDiam2Max = 0.4; BallRad2 = 0.18   
+  Lidar data -  
+    Tree 16 is a portion of Tree 24, therefore discarded.  
+    Tree 5 is a dead tree, with no canopy (just a stick).  
+    So total number of trees identified = 28.  
+  Census data -  
+    Total number of trees identified = 25 (3 less than the Lidar data; Tree 15, Tree 17 and Tree 27 from Lidar are not in the census. Tree 15 is a dead tree, Tree 17 is a dead tree and Tree 27 is live tree with canopy and height of 5.83 m and DBH of 10.8 cm).   
+
+Plot #2:  
+The key parameters are: PatchDiam2Min = 0.15; PatchDiam2Max = 0.4; BallRad2 = 0.18   
+  Lidar data -  
+    Tree 12, 23 are totally surrounded by Lichens or mosses, therefore discarded.  
+    Tree 1, 2, 7, 24, 25 are dead trees, with very minimum canopy (almost a stick).   
+    So total number of trees identified = 35 - 7 = 28.  
+  Census data -  
+    Total number of trees identified = 28 (equal to Lidar data).   
+
+Plot #3:  
+The key parameters are: PatchDiam2Min = 0.15; PatchDiam2Max = 0.4; BallRad2 = 0.2   
+  Lidar data -  
+    Tree 2, 6, 8 are totally surrounded by Lichens or mosses, therefore discarded.  
+    Tree 18 is small ones and were not scanned properly with gaps and therefore not included.  
+    Tree 1, 23 is a dead tree, with very minimum canopy (almost a stick).  
+    So total number of trees identified = 36 - 6 = 30.     
+  Census data -  
+    Total number of trees identified = 26 (4 less than the Lidar data).   
+
+Plot #4:  
+The key parameters are: PatchDiam2Min = 0.15; PatchDiam2Max = 0.4; BallRad2 = 0.18   
+  Lidar data -  
+    Tree 18 are totally surrounded by Lichens or mosses, therefore discarded.  
+    Tree 2, 6, 8, 23 is a small ones and were not scanned properly with multiple similar points and therefore not included.  
+    Tree 5, 14 are small ones and therefore could be removed.   
+    Tree 25 is a dead tree, with no canopy (just a stick).  
+    So total number of trees identified = 41 - 8 = 33.   
+  Census data -  
+    Total number of trees identified = 26 (7 less than the Lidar data).   
+
+Plot #5:  
+The key parameters are: PatchDiam2Min = 0.15; PatchDiam2Max = 0.37; BallRad2 = 0.2   
+  Lidar data -  
+    Tree 10, 23, 26, 37, 40 are totally surrounded by Lichens or mosses, tree 21 has the stem divided below breast height therefore discarded.  
+    Tree 30 was not cropped properly and might be part of another tree, so removed.  
+    So total number of trees identified = 42 - 7 = 34.  
+  Census data -  
+    Total number of trees identified = 33 (2 less than the Lidar data).   
+
+Plot #6:  
+The key parameters are: PatchDiam2Min = 0.15; PatchDiam2Max = 0.4; BallRad2 = 0.2   
+  Lidar data -  
+    Tree 8 is a small one with very little canopy on it, therefore could be removed.  
+    So total number of trees identified = 21.  
+  Census data -  
+    Total number of trees identified = 21 (equla to the Lidar data).   
+
+
